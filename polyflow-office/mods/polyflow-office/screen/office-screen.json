@@ -1,0 +1,39 @@
+{
+  "id": "root",
+  "type": "column",
+  "titlebar": "none",
+  "theme": "polyflow-neon",
+  "background": "canvas",
+  "terminal_padding": [
+    8,
+    10
+  ],
+  "divider": {
+    "width": 1,
+    "color": "border"
+  },
+  "children": [
+    {
+      "id": "office-scene",
+      "type": "block",
+      "window_drag": true,
+      "content": {
+        "mod": "polyflow-office",
+        "props": {
+          "screen": true
+        }
+      }
+    },
+    {
+      "id": "office-chat-bottom",
+      "type": "block",
+      "size": {
+        "px": 320
+      },
+      "min": 120,
+      "content": {
+        "agent": "focused"
+      }
+    }
+  ]
+}

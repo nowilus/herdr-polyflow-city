@@ -1,0 +1,17 @@
+PolyFlow City layout for Herdr
+Copyright 2026 nowilus
+
+This layout is a fork of the Traveler layout for Herdr
+(https://github.com/franky5440-afk/herdr-traveler), Copyright 2026 Frank Lin,
+licensed under the Apache License 2.0. Its mods traveler-chrome, traveler-spaces,
+traveler-agents, traveler-tabs and inbox became polyflow-chrome, polyflow-spaces,
+polyflow-agents, polyflow-tabs and polyflow-inbox here. They were modified: renamed,
+retinted for the PolyFlow palette, cyberpunk archetypes and buildings instead of
+fantasy jobs and places, opaque card hovers, and a Windows branch for the inbox
+(PowerShell listing, rundll32 opening).
+
+Traveler's polyflow-spaces, polyflow-tabs and polyflow-chrome ancestors are in turn
+derived from the built-in mods spaces, tabs and workspace-chrome of Herdr 0.1.11
+(Apache License 2.0).
+
+Images are not covered by the Apache License. See ART-NOTICE.md.

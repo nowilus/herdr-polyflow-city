@@ -1,0 +1,254 @@
+{
+  "id": "root",
+  "cloned_from": {
+    "name": "main",
+    "version": "0.1.11"
+  },
+  "type": "row",
+  "children": [
+    {
+      "id": "sidebar",
+      "type": "column",
+      "children": [
+        {
+          "id": "brand",
+          "type": "block",
+          "content": {
+            "mod": "polyflow-chrome"
+          },
+          "size": {
+            "px": 46
+          },
+          "window_drag": true
+        },
+        {
+          "id": "sidebar-lists",
+          "type": "column",
+          "children": [
+            {
+              "id": "spaces",
+              "type": "block",
+              "content": {
+                "mod": "polyflow-spaces"
+              },
+              "size": {
+                "weight": 1
+              },
+              "min": 90
+            },
+            {
+              "id": "agents",
+              "type": "block",
+              "content": {
+                "mod": "polyflow-agents"
+              },
+              "size": {
+                "weight": 1
+              },
+              "min": 90
+            }
+          ]
+        },
+        {
+          "id": "sidebar-footer",
+          "type": "block",
+          "content": {
+            "mod": "polyflow-chrome",
+            "props": {
+              "footer": true
+            }
+          },
+          "size": {
+            "px": 69
+          }
+        }
+      ],
+      "size": {
+        "px": 268
+      },
+      "min": 44,
+      "max": 480,
+      "background": {
+        "image": "mods/polyflow-chrome/sidebar-v3.png",
+        "fit": "cover"
+      },
+      "resizable": false
+    },
+    {
+      "id": "work",
+      "type": "column",
+      "children": [
+        {
+          "id": "tabs",
+          "type": "block",
+          "content": {
+            "mod": "polyflow-tabs"
+          },
+          "size": {
+            "px": 58
+          },
+          "window_drag": true
+        },
+        {
+          "id": "work-body",
+          "type": "row",
+          "children": [
+            {
+              "id": "main",
+              "type": "block",
+              "content": {
+                "tab": "active",
+                "pane": {
+                  "header": {
+                    "content": {
+                      "mod": "pane"
+                    },
+                    "reveal": "always",
+                    "height": 30,
+                    "position": "top"
+                  },
+                  "background": {
+                    "image": "mods/polyflow-chrome/map-v2.png",
+                    "fit": "cover"
+                  },
+                  "border": {
+                    "width": 1,
+                    "color": "#00e5ff55"
+                  },
+                  "focus": {
+                    "width": 1,
+                    "color": "accent"
+                  },
+                  "radius": 0,
+                  "gap": 8,
+                  "lone": true
+                }
+              }
+            },
+            {
+              "id": "office",
+              "type": "column",
+              "hidden": true,
+              "size": {
+                "weight": 1.5
+              },
+              "min": 320,
+              "border": {
+                "width": 1,
+                "color": "border"
+              },
+              "children": [
+                {
+                  "id": "office-top",
+                  "type": "row",
+                  "children": [
+                    {
+                      "id": "office-scene",
+                      "type": "block",
+                      "content": {
+                        "mod": "polyflow-office"
+                      }
+                    },
+                    {
+                      "id": "office-chat-right",
+                      "type": "block",
+                      "hidden": true,
+                      "size": {
+                        "px": 560
+                      },
+                      "min": 320,
+                      "content": {
+                        "agent": "focused"
+                      }
+                    }
+                  ]
+                },
+                {
+                  "id": "office-chat-bottom",
+                  "type": "block",
+                  "hidden": true,
+                  "size": {
+                    "px": 340
+                  },
+                  "min": 160,
+                  "content": {
+                    "agent": "focused"
+                  }
+                }
+              ]
+            },
+            {
+              "id": "panel",
+              "type": "column",
+              "children": [
+                {
+                  "id": "panel-body",
+                  "type": "stack",
+                  "children": [
+                    {
+                      "id": "files",
+                      "type": "block",
+                      "content": {
+                        "mod": "files"
+                      }
+                    },
+                    {
+                      "id": "changes",
+                      "type": "block",
+                      "content": {
+                        "mod": "changes"
+                      }
+                    },
+                    {
+                      "id": "inbox",
+                      "type": "block",
+                      "content": {
+                        "mod": "polyflow-inbox"
+                      }
+                    }
+                  ],
+                  "active": "files"
+                }
+              ],
+              "size": {
+                "px": 368
+              },
+              "min": 280,
+              "max": 900,
+              "hidden": true
+            }
+          ],
+          "padding": 8,
+          "gap": 8
+        },
+        {
+          "id": "status",
+          "type": "block",
+          "content": {
+            "mod": "workspace-status"
+          },
+          "size": {
+            "px": 28
+          }
+        }
+      ],
+      "resizable": false
+    }
+  ],
+  "background": "canvas",
+  "terminal_padding": [
+    14,
+    12
+  ],
+  "divider": {
+    "width": 1,
+    "color": "border"
+  },
+  "titlebar": "none",
+  "traffic_lights": [
+    12,
+    16
+  ],
+  "theme": "polyflow-neon",
+  "terminal_opacity": 0.6
+}
