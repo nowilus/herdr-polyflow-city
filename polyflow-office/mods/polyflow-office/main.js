@@ -3,36 +3,46 @@
 // around the tower overview. Clicking a floor lists its agents; the floor's own 3/4 view comes in a later stage.
 import { View, div } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
-import { agents, layout, terminals, appHome, focused, theme, run, props, shared, setShared, openOverlay, closeOverlay, settings, spaces, readTextFile } from "herdr";
-import { KEY, CHAT_PLACES, allowsFloatingChat, modeCommands, nextState, officeState } from "./modes.js";
+import { agents, layout, terminals, appHome, theme, run, props, shared, setShared, openOverlay, closeOverlay, settings, spaces, readTextFile } from "herdr";
+import { KEY, CHAT_PLACES, allowsFloatingChat, layoutCommands, nextState, officeState } from "./modes.js";
 import { openScreen } from "./screen.js";
-import { activityText, byFloor, withHelpers } from "./activity.js";
+import { byFloor, doingText, subagentRecords, withHelpers, withSubagents } from "./activity.js";
 import { followActivity } from "./activity-reader.js";
+import { followSharedSubagents } from "./subagents-follow.js";
+import { followSharedMeta } from "./meta-follow.js";
+import { startMeterFlush } from "./cost-meter.js";
+import { createMeter } from "./cost-model.js";
+import { initLimitsWindow, renderLimitsChip, renderLimitsWindow } from "./limits-ui.js";
 import { JOBS_MEMORY_KEY, assignJobs, tabNames, tabRefs } from "./lib.js";
 import { TOWER, renderTower } from "./tower.js";
 import { SHOWN_MAX, advance, floorGoals, newWorld, occupancy, pickShown } from "./crowd.js";
 import { POUR_MS } from "./tower-props.js";
 import { demoCrew } from "./demo.js";
-import { chatIsOpen, closeChat, openChat, renderChatBar, renderHandoff, setChatView, switchToTerminal } from "./chat-window.js";
-import { flushDeskChat, initDeskChat, renderDeskChat } from "./desk-chat.js";
-import { initCard, openAgentCard, renderAgentCard } from "./agent-card.js";
-import { PENDING_KEY, initNewAgent, openNewAgent, pendingAgent, renderNewAgent, settlePending } from "./new-agent.js";
+import { chatIsOpen, closeChat, openChat, selectChatTarget, setChatView } from "./chat-window.js";
+import { SCREEN_CHAT_KEY, chatPlaceOf } from "./chat-place.js";
+import { closeChatBar, closeChatCoordinator, closeChatPlace, currentChatTarget, initChatBar, initChatCoordinator, initChatPlace, renderChatPlace, renderPlaceBar, setScreenChatShown } from "./chat-place-view.js";
+import { startOfficePrefs } from "./office-prefs.js";
+import { closeFilePreview, initFilePreview, renderFilePreview } from "./chat-file-preview.js";
+import { closeCard, initCard, openAgentCard, renderAgentCard } from "./agent-card.js";
+import { PENDING_KEY, closeNewAgent, initNewAgent, openNewAgent, pendingAgent, renderNewAgent, settlePending } from "./new-agent.js";
 import { completePacks } from "./art-packs.js";
 import { FLOOR_TICK_MS, closeFloor, floorTick, openFloor, renderOpenFloor } from "./floor-controller.js";
-import { isCalm, setCalm } from "./labels.js";
+import { isCalm, setCalm, statusLook } from "./labels.js";
+import { CHAT_UI_KEY, SUBAGENTS_KEY, internalOf, pruneChatUi } from "./chat-model.js";
+import { BAR_HEIGHT, BODY_SIZE, BUTTON, SIGN_FONT, UI_FONT } from "./ui-tokens.js";
+import { uiButton } from "./ui-kit.js";
 
-const SIGN_FONT = "Silkscreen";
-const BAR_H = 30;
+const BAR_H = BAR_HEIGHT;
 const TOWER_RATIO = TOWER.w / TOWER.h;
 const CHAT_LABEL = { bottom: "Chat below", right: "Chat right", float: "Chat floating" };
 const JOBS_FILE = `${appHome()}/mods/polyflow-agents/jobs.json`;
-const STATUS = { working: "WORKING", blocked: "NEEDS YOU", done: "DONE", idle: "IDLE" };
 const MINI_MANIFEST = `${appHome()}/mods/polyflow-office/art/mini/manifest.json`;
 const TOWER_MANIFEST = `${appHome()}/mods/polyflow-office/art/tower/manifest.json`;
 const PEOPLE_MANIFEST = `${appHome()}/mods/polyflow-office/art/people/manifest.json`;
 const SCENES_MANIFEST = `${appHome()}/mods/polyflow-office/art/scenes.json`;
 const ART_INDEX = `${appHome()}/mods/polyflow-office/art/index.json`;
 const TICK_MS = 250;
+const UI_TIDY_MS = 10000;
 
 // Whether the office runs on its own: docked in someone else's layout (the "PolyFlow Office" mod), not inside the
 // PolyFlow City layout whose nodes (office, office-chat-*) the modes switch. Then there are no modes: the office is
@@ -42,12 +52,17 @@ function hasNode(node, id) {
   if (node.id === id) return true;
   return Object.values(node).some((v) => (Array.isArray(v) ? v.some((c) => hasNode(c, id)) : typeof v === "object" && hasNode(v, id)));
 }
-export const standalone = () => !hasNode(layout(), "office");
+export function screenMode() {
+  const find = node => node && (node.content?.mod === "polyflow-office" && node.content?.props?.screen === true || (node.children ?? []).some(find));
+  return Boolean(find(layout()));
+}
+export const standalone = () => !screenMode() && !hasNode(layout(), "office");
+const conversationPlace = () => chatPlaceOf({ state: officeState(shared(KEY)), screen: screenMode(), standalone: standalone() });
 
 // FULL is a PolyFlow City mode: never on when the office runs on its own.
-const fullMode = () => !standalone() && officeState(shared(KEY)).mode === "full";
+const fullMode = () => !screenMode() && !standalone() && officeState(shared(KEY)).mode === "full";
 
-// The floating chat only belongs to full + float: anywhere else it is closed. Runs after our own actions and, via
+// Explicit FLOAT also belongs to SIDE. Runs after our own actions and, via
 // the view's timer, after changes made elsewhere (the tab bar's Office button, keys.json commands). On its own the
 // office keeps it.
 function closeStrayChat(state) {
@@ -65,33 +80,33 @@ function pickAgent(address, demo, agentsBy, doing, menu = false) {
 }
 
 // What the card may do. TERMINAL always ends on the real terminal and CHAT on the conversation, whatever the
-// floating window showed before. The floating chat belongs to FULL in PolyFlow City, and is always there on its own.
+// floating window showed before. CHAT preserves the dock, or explicitly opens FLOAT in SIDE/standalone.
 function cardDeps(button) {
   return {
     button,
     showTerminal: (address) => showTerminalOf(address),
-    openChatFor: fullMode() || standalone() ? (address) => showConversationOf(address) : null,
+    openChatFor: conversationPlace() ? (address) => showConversationOf(address) : null,
   };
 }
 
 // The agent's real terminal: focused, and if the floating window is open (or belongs to this mode) it switches to it.
 function showTerminalOf(address) {
-  if (String(address).startsWith("demo-")) return;
-  run("agent.focus", { terminal: address });
+  if (!address || String(address).startsWith("demo-")) return;
+  // An internal subagent has no terminal: its agent's.
+  const inner = internalOf(address);
+  if (inner) return showTerminalOf(inner.parent);
   const s = officeState(shared(KEY));
-  if (chatIsOpen() || (s.mode === "full" && s.chat === "float")) {
-    setChatView(address, "terminal");
-    openChat(address);
-  }
+  const place = conversationPlace();
+  const open = standalone() || (s.mode === "full" && s.chat === "float");
+  if (place && (place !== "float" || open || chatIsOpen())) setChatView(address, "terminal", { place, open });
+  else selectChatTarget(address);
 }
 
-// The agent's conversation in the floating chat window.
+// The agent's conversation in the current place; SIDE explicitly opens FLOAT without changing mode.
 function showConversationOf(address) {
-  if (String(address).startsWith("demo-")) return;
-  apply({ type: "chat", place: "float" });
-  run("agent.focus", { terminal: address });
-  setChatView(address, "chat");
-  openChat(address);
+  const place = conversationPlace();
+  if (!place) return;
+  setChatView(address, "chat", { place, focusInput: true, open: place === "float" });
 }
 
 // Apply a user action: store the new state, then move the layout there.
@@ -99,44 +114,69 @@ function apply(action) {
   const next = nextState(shared(KEY), action);
   setShared(KEY, next);
   if (standalone()) return next; // no PolyFlow City nodes to show or hide
-  for (const [name, args] of modeCommands(next)) run(name, args);
+  for (const [name, args] of layoutCommands(next)) run(name, args);
   closeStrayChat(next);
+  if (action?.type === "chat" && action.place === "float" && next.mode === "full") openChat(chatTarget());
   return next;
 }
 
 // The agent the chat should show: the focused one, else the first.
 function chatTarget() {
-  const list = agents();
-  const f = focused();
-  return list.find((a) => a.address === f?.terminal)?.address ?? list.find((a) => a.focused)?.address ?? list[0]?.address ?? null;
+  return currentChatTarget();
 }
 
 // Show an agent: focus it (the chat blocks follow the focused agent); in the floating mode also open the chat.
 function showAgent(address) {
-  if (String(address).startsWith("demo-")) return;
-  run("agent.focus", { terminal: address });
+  if (!selectChatTarget(address)) return;
   const s = officeState(shared(KEY));
   if (fullMode() && s.chat === "float") openChat(address);
 }
 
 export default class PolyflowOffice extends View {
-  // The view goes away (its window is rebuilt or closed): keep what was typed in the chat.
+  // The view goes away (its window is rebuilt or closed): keep what was typed in the chat and the card, and let go
+  // of the card's text fields.
   async close() {
-    if (this.deskChat) flushDeskChat(this);
+    this.officePrefs?.stop();
+    if (this.chatBar) closeChatBar(this);
+    else if (this.chatPlace) closeChatPlace(this);
+    if (this.chatCoordinatorTimer) closeChatCoordinator(this);
+    if (this.agentCard) closeCard(this);
+    if (this.newAgent) closeNewAgent(this);
+    if (this.filePreview) closeFilePreview(this);
   }
 
   init(_p, cx) {
-    // In the second window (office-screen layout) the bar only toggles the chat and closes that window.
+    // SCREEN has its own coordinator/shared; only CALM follows the main home.
     this.screen = Boolean(props()?.screen);
     // The same mod draws the floating chat's title bar and the agent card.
     this.chatBar = props()?.chatBar ?? null;
-    this.chatHandoff = props()?.chatHandoff ?? null;
-    this.agentCard = props()?.agentCard ?? null;
+    this.chatPlace = props()?.chatPlace ?? null;
+    if (this.chatBar) {
+      this.chatPlace ??= "float";
+      initChatBar(this, cx);
+      return;
+    }
     this.deskChat = props()?.deskChat ?? null;
-    if (this.deskChat) initDeskChat(this, this.deskChat, cx);
-    if (this.agentCard) initCard(this, cx);
+    if (this.deskChat) {
+      this.chatFocusInput = props()?.focusInput === true;
+      initChatPlace(this, "float", cx);
+      return;
+    }
+    if (this.chatPlace) {
+      initChatPlace(this, this.chatPlace, cx);
+      return;
+    }
+    this.agentCard = props()?.agentCard ?? null;
+    if (this.agentCard) { initCard(this, cx); return; }
     this.newAgent = Boolean(props()?.newAgent);
-    if (this.newAgent) initNewAgent(this, cx);
+    if (this.newAgent) { initNewAgent(this, cx); return; }
+    this.filePreview = props()?.filePreview ?? null;
+    if (this.filePreview) { initFilePreview(this, this.filePreview, cx); return; }
+    this.limitsWindow = Boolean(props()?.limitsWindow);
+    if (this.limitsWindow) {
+      initLimitsWindow(this, cx);
+      return;
+    }
     this.notice = null;
     this.noticeUntil = 0; // a notice with a time limit goes away by itself (0: it stays)
     this.scene = { w: 800, h: 500 };
@@ -154,13 +194,27 @@ export default class PolyflowOffice extends View {
     this.cast = {}; // big floor-view people: { job: version } (art/people/manifest.json)
     this.assets = new Set(); // tower art (art/tower/manifest.json); the rest is drawn as stand-ins
     this.scenes = new Set(); // floors drawn from their pictures (art/scenes.json)
-    if (this.chatBar || this.chatHandoff || this.agentCard || this.newAgent || this.deskChat) return;
+    this.chatStandalone = standalone();
+    initChatCoordinator(this, cx);
+    this.officePrefs = startOfficePrefs(cx, { screen: this.screen, getCalm: isCalm, applyCalm: setCalm,
+      onError: message => {
+        if (message || this.notice?.startsWith("CALM sync: ")) { this.notice = message; this.noticeUntil = 0; }
+      } });
+    // What this tower's readers cost, counted for metrics.json and the chat's SESSION section (cost-model.js).
+    this.cost = createMeter();
+    startMeterFlush(cx, "office", this.cost);
     followActivity(this, cx);
+    // Claude Code's internal subagents (its Agent tool): shown as read-only helpers of their agent.
+    followSharedSubagents(this, cx, () => this.visible(), "office");
+    // Each agent's energy (model, effort, context) and the account limits, shared for the tower, the tree and the chat.
+    followSharedMeta(this, cx, () => this.visible());
     this.loadArt(cx);
     // Nothing moves while the office is closed (its view stays alive in the background).
     cx.timer.every(TICK_MS, (cx) => { if (this.visible()) this.tick(cx); });
     cx.timer.every(TICK_MS, (cx) => this.settle(cx));
     cx.timer.every(FLOOR_TICK_MS, (cx) => { if (this.openFloor && this.visible()) floorTick(this, this.crew(Date.now()), cx); });
+    this.uiGone = {}; // when each agent with saved panel state was first missed (in memory only)
+    cx.timer.every(UI_TIDY_MS, () => this.tidyChatUi());
     cx.spawn(async (cx) => {
       const text = await readTextFile(JOBS_FILE).catch(() => null);
       try {
@@ -171,9 +225,21 @@ export default class PolyflowOffice extends View {
     });
   }
 
+  // The side panel's saved state (per agent) of agents that have been gone for a minute is dropped, so it doesn't pile
+  // up. Only this instance (the tower, not a chat or a card) does it; the chat's drafts are never dropped here.
+  tidyChatUi() {
+    const present = new Set(terminals().map((t) => t.address));
+    for (const [parent, list] of Object.entries(shared(SUBAGENTS_KEY) ?? {})) for (const s of list ?? []) present.add(`${parent}~${s.id}`);
+    const { ui, gone } = pruneChatUi(shared(CHAT_UI_KEY), present, this.uiGone, Date.now());
+    this.uiGone = gone;
+    if (ui !== shared(CHAT_UI_KEY)) setShared(CHAT_UI_KEY, ui);
+  }
+
   // The agents the office shows and what they are doing: the real ones, or the demo crew.
   crew(now) {
-    return this.demo ? demoCrew(now) : { agents: withHelpers(agents(), terminals()), activity: this.activity ?? {} };
+    if (this.demo) return demoCrew(now);
+    const subs = this.subagents ?? {};
+    return { agents: withSubagents(withHelpers(agents(), terminals()), subs), activity: { ...(this.activity ?? {}), ...subagentRecords(subs) } };
   }
 
   // Follow state changed from outside this view: a closed office forgets its open floor and lists (it would
@@ -270,32 +336,20 @@ export default class PolyflowOffice extends View {
     }
   }
 
-  button(id, label, action, t, { on = false, title = null } = {}) {
-    return div()
-      .id(id)
-      .h(22)
-      .px(7)
-      .flex()
-      .items_center()
-      .flex_none()
-      .font_family(SIGN_FONT)
-      .text_size(10)
-      .border(1)
-      // A pressed button is tinted, not framed: the full yellow frame belongs to the focused pane only.
-      .border_color(t.border)
-      .bg(on ? `${t.accent}26` : `${t.surface}e6`)
-      .text_color(on ? t.accent : t.muted)
-      .cursor_pointer()
-      .hover((s) => s.text_color(t.foreground).border_color(t.accent))
-      .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
-      .on_click(action)
-      .when(Boolean(title), (el) => el.tooltip(title))
-      .child(label);
+  button(id, label, action, t, opts) {
+    return uiButton(id, label, action, t, opts);
+  }
+
+  toggleCalm(cx) {
+    setCalm(!isCalm());
+    this.officePrefs?.request(isCalm());
+    cx.notify();
   }
 
   bar(state, crew, t) {
     const count = crew.agents.length;
     const waiting = crew.agents.filter((a) => a.status === "blocked");
+    const limits = renderLimitsChip(t);
     const sep = () => div().w(1).h(16).mx(4).bg(t.border).flex_none();
     const row = h_flex().h(BAR_H).flex_none().px(8).gap(4).items_center().bg(t.chrome).border_b(1).border_color(t.border)
       .child(div().font_family(SIGN_FONT).text_size(12).text_color(t.accent).child("OFFICE"))
@@ -303,19 +357,21 @@ export default class PolyflowOffice extends View {
         .child(this.demo ? `DEMO: ${count} MADE-UP AGENTS` : `${count} AGENTS`))
       // Who needs the person, always in sight; a click lists them.
       .when(waiting.length > 0, (el) => el.child(
-        div().id("needs-you").ml(8).h(22).px(8).flex().items_center().gap(4).bg(t.blocked).text_color("#ffffff")
-          .font_family("Chakra Petch").text_size(12).cursor_pointer()
+        div().id("needs-you").ml(8).h(BUTTON.height).px(BUTTON.padX).flex().items_center().gap(4).bg(t.blocked).text_color(t.solid_foreground ?? t.background)
+          .font_family(UI_FONT).text_size(BODY_SIZE).cursor_pointer()
           .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
           .on_click((_e, cx) => { this.needsOpen = !this.needsOpen; cx.notify(); })
           .tooltip("Agents waiting for you: click for the list")
-          .child(`! ${waiting.length} NEEDS YOU`),
+          .child(`${statusLook("blocked").mark} ${waiting.length} ${statusLook("blocked").word}`),
       ))
       .when(Boolean(pendingAgent(Date.now())), (el) => el.child(
         div().ml(8).font_family(SIGN_FONT).text_size(10).text_color(t.working).child(`CONNECTING ${String(pendingAgent(Date.now()).name).toUpperCase()}...`)))
+      .when(Boolean(limits), (el) => el.child(limits))
       .child(div().flex_1());
     if (this.screen) {
       return row
-        .child(this.button("chat", "CHAT", () => run("layout.toggle", { id: "office-chat-bottom" }), t, { title: "Show or hide the agent's terminal" }))
+        .child(this.button("chat", "CHAT", () => setScreenChatShown(shared(SCREEN_CHAT_KEY)?.shown === false), t,
+          { on: shared(SCREEN_CHAT_KEY)?.shown !== false, title: "Show or hide the agent's conversation" }))
         .child(this.button("close", "X", () => run("window.close"), t, { title: "Close this window" }));
     }
     row.child(this.button("new-agent", "+ AGENT", () => openNewAgent(), t, { title: "Start a new agent: it walks in through the lobby" }))
@@ -323,9 +379,9 @@ export default class PolyflowOffice extends View {
     // On its own (another layout): no modes to switch, the chat is a floating window, and the office stays open.
     if (standalone()) {
       return row
-        .child(this.button("chat-open", "OPEN CHAT", () => { const a = chatTarget(); if (a) showConversationOf(a); }, t, { title: "The focused agent's conversation in a floating window" }))
+        .child(this.button("chat-open", "OPEN CHAT", () => { const a = chatTarget(); if (a) showConversationOf(a); }, t, { title: "The focused agent's conversation" }))
         .child(sep())
-        .child(this.button("calm", "CALM", (_e, cx) => { setCalm(!isCalm()); cx.notify(); }, t, { on: isCalm(), title: "Calm mode: no blinking lights or pulsing glows (states stay visible)" }))
+        .child(this.button("calm", "CALM", (_e, cx) => this.toggleCalm(cx), t, { on: isCalm(), title: "Calm mode: no blinking lights or pulsing glows (states stay visible)" }))
         .child(this.button("demo", "DEMO", (_e, cx) => this.toggleDemo(cx), t, { on: this.demo, title: "Demo: a made-up crew walks the office (your agents are hidden meanwhile)" }));
     }
     row.child(this.button("full", state.mode === "full" ? "EXIT FULL" : "FULL", () => apply({ type: "full" }), t, { on: state.mode === "full", title: "Full: the office takes the place of the terminals, with the agent's chat beside it" }));
@@ -333,11 +389,11 @@ export default class PolyflowOffice extends View {
       for (const place of CHAT_PLACES) {
         row.child(this.button(`chat-${place}`, place.toUpperCase(), () => apply({ type: "chat", place }), t, { on: state.chat === place, title: CHAT_LABEL[place] }));
       }
-      if (state.chat === "float") row.child(this.button("chat-open", "OPEN CHAT", () => openChat(chatTarget()), t, { title: "The agent's terminal in a floating window" }));
+      if (state.chat === "float") row.child(this.button("chat-open", "OPEN CHAT", () => showConversationOf(chatTarget()), t, { title: "The agent's conversation" }));
     }
     return row
       .child(sep())
-      .child(this.button("calm", "CALM", (_e, cx) => { setCalm(!isCalm()); cx.notify(); }, t, { on: isCalm(), title: "Calm mode: no blinking lights or pulsing glows (states stay visible)" }))
+      .child(this.button("calm", "CALM", (_e, cx) => this.toggleCalm(cx), t, { on: isCalm(), title: "Calm mode: no blinking lights or pulsing glows (states stay visible)" }))
       .child(this.button("demo", "DEMO", (_e, cx) => this.toggleDemo(cx), t, { on: this.demo, title: "Demo: a made-up crew walks the office (your agents are hidden meanwhile)" }))
       .child(this.button("screen", "SCREEN", (_e, cx) => this.launchScreen(cx), t, { title: "Open the office in its own OS window (e.g. on a second monitor)" }))
       .child(this.button("off", "X", () => apply({ type: "off" }), t, { title: "Close the office" }));
@@ -377,9 +433,10 @@ export default class PolyflowOffice extends View {
 
   render() {
     const t = theme();
-    if (this.chatBar) return renderChatBar(this.chatBar, t, (...a) => this.button(...a));
-    if (this.chatHandoff) return renderHandoff(this.chatHandoff, t, (...a) => this.button(...a));
-    if (this.deskChat) return renderDeskChat(this, t, { showTerminal: (cx) => switchToTerminal(this.deskChat, cx) });
+    if (this.limitsWindow) return renderLimitsWindow(this, t, (...a) => this.button(...a));
+    if (this.chatBar) return renderPlaceBar(this, t, (...a) => this.button(...a));
+    if (this.chatPlace) return renderChatPlace(this, t, {});
+    if (this.filePreview) return renderFilePreview(this, t, (...a) => this.button(...a));
     if (this.newAgent) return renderNewAgent(this, t, (...a) => this.button(...a));
     if (this.agentCard) return renderAgentCard(this, t, cardDeps((...a) => this.button(...a)));
     const state = officeState(shared(KEY));
@@ -389,7 +446,7 @@ export default class PolyflowOffice extends View {
     const agentsBy = Object.fromEntries(list.map((a) => [a.address, a]));
     const nowS = Math.floor(Date.now() / 1000);
     // What an agent is doing right now, for tooltips.
-    const doing = (address) => activityText(agentsBy[address]?.status, crew.activity[address] ?? null, nowS);
+    const doing = (address) => doingText(agentsBy[address]?.status, crew.activity[address] ?? null, nowS);
     const scene = this.openFloor && this.floor
       ? renderOpenFloor(this, crew, { agentsBy, assigned, doing, minis: this.minis, cast: this.cast, onPerson: (address) => pickAgent(address, this.demo, agentsBy, doing), onPersonMenu: (address) => pickAgent(address, this.demo, agentsBy, doing, true), onInvite: () => openNewAgent() }, t)
       : this.renderTowerScene(byFloor(list, crew.activity, nowS), assigned, agentsBy, doing, t);
@@ -414,13 +471,13 @@ export default class PolyflowOffice extends View {
   agentRows(list, activity, t, close) {
     const nowS = Math.floor(Date.now() / 1000);
     return list.map((a) => v_flex().id(`row-${a.address}`).px(8).py(6).gap(2).border_l(3)
-      .border_color(t[{ working: "working", blocked: "blocked", done: "done" }[a.status] ?? "dim"] ?? t.border).bg(`${t.surface}e6`)
+      .border_color(t[statusLook(a.status).key] ?? t.border).bg(`${t.surface}e6`)
       .cursor_pointer().hover((s) => s.bg(`${t.raised}f0`))
-      .on_click((_e, cx) => { close(); pickAgent(a.address, this.demo, { [a.address]: a }, () => activityText(a.status, activity[a.address] ?? null, nowS)); cx.notify(); })
-      .on_mouse_down("right", (_e, cx) => { close(); pickAgent(a.address, this.demo, { [a.address]: a }, () => activityText(a.status, activity[a.address] ?? null, nowS), true); cx.notify(); })
-      .child(div().font_family("Chakra Petch").text_size(13).text_color(t.foreground).child(a.tab_name || a.address))
-      .child(div().font_family("Chakra Petch").text_size(12).text_color(t.muted).truncate()
-        .child(activityText(a.status, activity[a.address] ?? null, nowS) ?? (a.status === "blocked" ? "waiting for your answer" : a.status ?? "idle"))));
+      .on_click((_e, cx) => { close(); pickAgent(a.address, this.demo, { [a.address]: a }, () => doingText(a.status, activity[a.address] ?? null, nowS)); cx.notify(); })
+      .on_mouse_down("right", (_e, cx) => { close(); pickAgent(a.address, this.demo, { [a.address]: a }, () => doingText(a.status, activity[a.address] ?? null, nowS), true); cx.notify(); })
+      .child(div().font_family(UI_FONT).text_size(13).text_color(t.foreground).child(a.tab_name || a.address))
+      .child(div().font_family(UI_FONT).text_size(BODY_SIZE).text_color(t.muted).truncate()
+        .child(doingText(a.status, activity[a.address] ?? null, nowS))));
   }
 
   // The "+N" list: everyone on one floor, those who need the person first.
@@ -444,7 +501,7 @@ export default class PolyflowOffice extends View {
     if (waiting.length === 0) this.needsOpen = false;
     return v_flex().id("needs-list").absolute().top(10).right(10).w(320).gap(6).p(10).bg(`${t.popover}f5`).border(1).border_color(t.blocked)
       .child(h_flex().items_center()
-        .child(div().flex_1().font_family(SIGN_FONT).text_size(12).text_color(t.blocked).child("NEEDS YOU"))
+        .child(div().flex_1().font_family(SIGN_FONT).text_size(12).text_color(t.blocked).child(statusLook("blocked").word))
         .child(this.button("needs-close", "X", (_e, cx) => { this.needsOpen = false; cx.notify(); }, t, { title: "Close" })))
       .children(this.agentRows(waiting, crew.activity, t, () => { this.needsOpen = false; }));
   }

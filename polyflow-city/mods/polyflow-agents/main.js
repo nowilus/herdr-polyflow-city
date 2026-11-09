@@ -1,11 +1,18 @@
 // PolyFlow City Agents card: draws agents() as job portrait cards, as a tree (helpers started with hc run --parent sit
 // indented under their parent); session name and model come from the optional statusLine cache.
-// Reads only the cache file: no commands, no network, no conversation logs or credentials; no number means no number drawn.
+// StatusLine cache plus shared energy data; the standalone tree follows metadata when no office reader is alive.
 import { View, div, image, svg } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
 import { agents, appHome, readTextFile, run, setAgentOrder, setShared, shared, spaces, terminals, theme, watchFolder } from "herdr";
-import { activityText, agentTree, parentsOf, withHelpers } from "./activity.js";
+import { activityText, agentTree, crewOf, parentsOf, subagentParents, subagentRecords } from "./activity.js";
 import { followActivity } from "./activity-reader.js";
+import { followSharedSubagents } from "./subagents-follow.js";
+import { META_KEY, detailsLine, metaOfAgent } from "./energy.js";
+import { CALM_KEY } from "./energy-pill.js";
+import { renderEnergyPill } from "./energy-pill-ui.js";
+import { followSharedMeta } from "./meta-follow.js";
+import { startMeterFlush } from "./cost-meter.js";
+import { createMeter } from "./cost-model.js";
 import { JOBS_MEMORY_KEY, appLabel, assignJobs, cachePath, jobIn, rememberJobs, modelText, parseCache, portraitPath, remoteCachePath, spritePath, tabNames, tabRefs } from "./lib.js";
 
 const HOME = appHome();
@@ -70,7 +77,15 @@ export default class PolyflowAgents extends View {
     this.loadRemote(cx);
     this.watch(cx);
     // What each agent is doing now, from the PolyFlow Office activity hook (null until it runs).
+    // What the tree's readers cost, counted for metrics.json (cost-model.js).
+    this.cost = createMeter();
+    startMeterFlush(cx, "tree", this.cost);
     followActivity(this, cx);
+    // Claude Code's internal subagents (its Agent tool), listed under their agent.
+    followSharedSubagents(this, cx, () => true, "tree");
+    followSharedMeta(this, cx, () => true, "tree");
+    this.syncCrew(cx);
+    cx.timer.every(1000, (cx) => this.syncCrew(cx));
     // The data is numeric, so refreshing at most every 30 seconds is enough; this also lets the stale marker appear by itself and retries the watch.
     cx.timer.every(30000, (cx) => {
       this.load(cx);
@@ -78,6 +93,27 @@ export default class PolyflowAgents extends View {
       // Remote is read every 60 seconds, same as the statusLine update interval; remote folders cannot be watched.
       if (++this.tick % 2 === 0) this.loadRemote(cx);
     });
+  }
+
+  // Cache reads, remembered jobs and host ordering belong to lifecycle callbacks, never render.
+  syncCrew(cx) {
+    const crew = crewOf(agents(), terminals(), this.subagents);
+    const tree = agentTree(crew, { ...parentsOf(terminals()), ...subagentParents(crew) });
+    const list = tree.map((x) => x.agent);
+    const kept = shared(JOBS_MEMORY_KEY) ?? {};
+    const tabs = tabRefs(spaces(), list);
+    const assigned = assignJobs(tabNames(spaces(), list), this.jobs, kept, tabs);
+    const memory = rememberJobs(assigned, kept, tabs);
+    if (memory) setShared(JOBS_MEMORY_KEY, memory);
+    const order = list.map((a) => a.address);
+    if (JSON.stringify(order) !== this.agentOrder) {
+      this.agentOrder = JSON.stringify(order);
+      setAgentOrder(order);
+    }
+    const fresh = list.filter((a) => !this.seen.has(a.address));
+    if (fresh.some((a) => cachePath(HOME, a.address) !== null)) this.load(cx);
+    if (fresh.some((a) => remoteCachePath(a.address) !== null)) this.loadRemote(cx);
+    for (const a of fresh) this.seen.add(a.address);
   }
 
   // Watch the cache folder and reread on change. If the folder is missing or not allowed, end the loop
@@ -160,7 +196,7 @@ export default class PolyflowAgents extends View {
     });
   }
 
-  card(a, depth, now, t) {
+  card(a, depth, now, t, assigned) {
     const cache = this.cache[a.address] ?? this.remote[a.address] ?? null;
     // blocked is visible at a glance: border and status text use t.blocked, overriding the focused t.accent.
     // Focus is a left accent bar plus a tint, not a full border: the full accent frame belongs to the focused terminal.
@@ -168,7 +204,9 @@ export default class PolyflowAgents extends View {
     const statusColor = a.status === "blocked" ? t.blocked : t[a.status] ?? t.dim;
     const label = appLabel(a.app);
     const model = modelText(cache?.model, cache?.effort);
-    const doing = activityText(a.status, this.activity?.[a.address] ?? null, now);
+    const doing = activityText(a.status, (a.internal ? subagentRecords(this.subagents)[a.address] : this.activity?.[a.address]) ?? null, now);
+    const snapshot = shared(META_KEY);
+    const meta = metaOfAgent(a.address, snapshot?.agents, this.subagents);
     const card = h_flex()
       .id(`polyflow-${a.address}`)
       .relative()
@@ -183,8 +221,13 @@ export default class PolyflowAgents extends View {
       .when(a.focused, (el) => el.child(div().absolute().left(0).top(0).bottom(0).w(3).bg(a.status === "blocked" ? t.blocked : t.accent)))
       .cursor_pointer()
       .hover((s) => s.bg(`${t.raised}f8`))
-      .on_click(() => run("agent.focus", { terminal: a.address }))
-      .child(portrait(a, this.assigned, t, depth))
+      // An internal subagent has no terminal: its agent's. The office chat follows the pick, the subagent itself included
+      // (the same record as the office's selectChatTarget, so a pick of a subagent is also let go here).
+      .on_click(() => {
+        setShared("polyflow-office.chat-target", { address: a.address, parent: a.internal ? a.parent : null, at: Date.now() });
+        run("agent.focus", { terminal: a.internal ? a.parent : a.address });
+      })
+      .child(portrait(a, assigned, t, depth))
       .child(
         v_flex()
           .flex_1()
@@ -196,7 +239,8 @@ export default class PolyflowAgents extends View {
               .min_w(0)
               .gap(8)
               .items_center()
-              .child(div().flex_1().min_w(0).truncate().font_semibold().child(a.tab_name || a.address))
+              .child(div().flex_1().min_w(0).truncate().font_semibold().tooltip(detailsLine(meta)).child(a.tab_name || a.address))
+              .child(renderEnergyPill(meta, t, { id: `ctx-${a.address}`, compact: true, stale: snapshot?.stale === true, calm: shared(CALM_KEY) === true }))
               .child(div().flex_none().text_size(11).text_color(statusColor).child(STATUS[a.status] ?? a.status)),
           )
           // Session name (set with /rename) under the tab name; takes no row when unset.
@@ -224,20 +268,13 @@ export default class PolyflowAgents extends View {
 
   render(cx) {
     const t = theme();
-    // Everyone, helpers without a pane of their own too, in tree order.
-    const tree = agentTree(withHelpers(agents(), terminals()), parentsOf(terminals()));
+    // Everyone, helpers without a pane of their own and internal subagents too, in tree order.
+    const crew = crewOf(agents(), terminals(), this.subagents);
+    const tree = agentTree(crew, { ...parentsOf(terminals()), ...subagentParents(crew) });
     const list = tree.map((x) => x.agent);
     const kept = shared(JOBS_MEMORY_KEY) ?? {};
     const tabs = tabRefs(spaces(), list);
-    this.assigned = assignJobs(tabNames(spaces(), list), this.jobs, kept, tabs);
-    // The sidebar is always there: it keeps the shared memory of who got which character (by name and by tab).
-    const memory = rememberJobs(this.assigned, kept, tabs);
-    if (memory) setShared(JOBS_MEMORY_KEY, memory);
-    setAgentOrder(list.map((a) => a.address));
-    // A newly appeared agent gets one immediate cache read, without waiting for the next timer.
-    const fresh = list.filter((a) => !this.seen.has(a.address));
-    if (fresh.some((a) => cachePath(HOME, a.address) !== null)) this.load(cx);
-    if (fresh.some((a) => remoteCachePath(a.address) !== null)) this.loadRemote(cx);
+    const assigned = assignJobs(tabNames(spaces(), list), this.jobs, kept, tabs);
     const now = Math.floor(Date.now() / 1000);
     return v_flex()
       .id("polyflow-agents")
@@ -252,7 +289,7 @@ export default class PolyflowAgents extends View {
           .gap(4)
           .p(6)
           .overflow_y_scrollbar()
-          .children(tree.map(({ agent, depth }) => this.card(agent, depth, now, t)))
+          .children(tree.map(({ agent, depth }) => this.card(agent, depth, now, t, assigned)))
           .when(list.length === 0, (el) =>
             el.child(div().p(8).text_size(12).text_color(t.dim).child("No agents")),
           ),

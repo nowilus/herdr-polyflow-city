@@ -56,6 +56,15 @@ export function activityText(status, record, nowS) {
   return record.target ? `${verb} ${record.target}` : `${verb} (${record.tool})`;
 }
 
+// The one line every view uses for what an agent is doing (the card, the chat's NOW, lists, tooltips), so they
+// never disagree. `life` is chat-model.js lifeOf: an ended or gone agent says so whatever its last status was.
+export function doingText(status, record, nowS, life = "live") {
+  if (life === "ended" || life === "gone") return life;
+  if (status === "blocked") return "needs you: answer in its terminal";
+  if (status === "working") return activityText(status, record, nowS);
+  return status === "done" ? "finished its turn" : "resting";
+}
+
 // Agents per floor, in FLOORS order: [{ floor, agents: [{ agent, station }] }]. Everyone on their own: a helper
 // (hc run --parent) stands wherever its own status and tool put it, like any other agent.
 export function byFloor(list, records, nowS) {
@@ -118,3 +127,39 @@ export function parentsOf(terminals) {
   for (const t of terminals ?? []) if (t?.address && typeof t.parent === "string" && t.parent) out[t.address] = t.parent;
   return out;
 }
+
+// The internal subagents of Claude Code agents (its Agent tool; hooks/subagents.mjs), as helpers of their agent:
+// subs = { [agent address]: [{ id, description, type, status, record }] }. They have no terminal, so they are
+// paneless, marked `internal` (read-only: nothing can type into them) and addressed "<agent>~<id>".
+export function withSubagents(list, subs) {
+  const all = list ?? [];
+  const extra = [];
+  for (const parent of all) {
+    for (const s of subs?.[parent.address] ?? []) {
+      extra.push({
+        address: `${parent.address}~${s.id}`, pane: null, space: parent.space, space_name: parent.space_name, tab: parent.tab,
+        tab_index: parent.tab_index, tab_name: `◇ ${s.description}`, status: s.status, app: null,
+        program: { name: s.type ? `subagent · ${s.type}` : "subagent" }, title: "", seq: 0, pinned: false, focused: false,
+        paneless: true, internal: true, parent: parent.address,
+      });
+    }
+  }
+  return extra.length ? [...all, ...extra] : all;
+}
+
+// Their activity records, by address (merged with the hook's records).
+export function subagentRecords(subs) {
+  const out = {};
+  for (const [parent, list] of Object.entries(subs ?? {})) for (const s of list ?? []) if (s.record) out[`${parent}~${s.id}`] = s.record;
+  return out;
+}
+
+// Their parents, by address (merged with parentsOf for the tree).
+export function subagentParents(list) {
+  const out = {};
+  for (const a of list ?? []) if (a?.internal && a.parent) out[a.address] = a.parent;
+  return out;
+}
+
+// Everyone the office knows: Herdr's agents, their hc helpers and Claude Code's internal subagents.
+export const crewOf = (list, terminals, subs) => withSubagents(withHelpers(list, terminals), subs);

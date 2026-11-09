@@ -83,6 +83,9 @@ export function supersedes(next, current) {
 // One hook payload -> the record the office reads. Unknown events give null (nothing is written).
 export function activityRecord(payload, now) {
   const p = payload !== null && typeof payload === "object" ? payload : {};
+  // A Claude Code subagent's calls come with its agent_id and the agent's terminal: they aren't the agent's own
+  // (the office follows the subagent through its own file, hooks/subagents.mjs).
+  if (typeof p.agent_id === "string" && p.agent_id !== "") return null;
   const event = typeof p.hook_event_name === "string" ? p.hook_event_name : null;
   const base = { at: now, event };
   switch (event) {
@@ -112,7 +115,7 @@ const RENAME_WAIT_MS = 15;
 
 // On Windows a rename fails (EPERM/EBUSY) while the office happens to be reading the file: wait a moment and try
 // again a few times before giving up (then the next event writes again).
-function writeAtomic(file, text) {
+export function writeAtomic(file, text) {
   const tmp = `${file}.${process.pid}.tmp`;
   writeFileSync(tmp, text);
   for (let i = 1; ; i++) {
@@ -133,23 +136,32 @@ function writeAtomic(file, text) {
 // sessions/<terminal>.json: { transcript, session, bound } — written only when it changes. `bound` says how the
 // terminal is known: "env" (the hook ran with that terminal's HC_TERMINAL_ID: certain) or "guess" (a Codex session
 // matched to a terminal by folder and start time: maybe wrong, so the chat won't write to it).
-export function sessionRecord(payload, bound) {
+// `previous`: the terminal's session file before this one (/clear, resume), so the chat can show the end of the old
+// conversation above a "New conversation" line, also after its window was rebuilt.
+// A guessed binding (Codex matched by folder and time) never replaces a certain one, and keeps no `previous`: two
+// guesses flipping between files would otherwise read as a new conversation every time.
+export function sessionRecord(payload, bound, current = null) {
   const transcript = transcriptOf(payload);
   if (!transcript) return null;
+  const certain = bound === "env";
+  if (!certain && current?.bound === "env") return null;
   const session = typeof payload?.session_id === "string" && /^[\w-]{8,64}$/.test(payload.session_id) ? payload.session_id : null;
-  return { transcript, session, bound: bound === "env" ? "env" : "guess" };
+  const before = !certain ? null
+    : typeof current?.transcript === "string" && current.transcript !== transcript ? current.transcript
+    : current?.transcript === transcript && typeof current?.previous === "string" ? current.previous : null;
+  return { transcript, session, bound: certain ? "env" : "guess", ...(before ? { previous: before } : {}) };
 }
 
 function rememberTranscript(data, id, payload, bound) {
-  const next = sessionRecord(payload, bound);
-  if (!next) return;
   const dir = join(data, "sessions");
-  mkdirSync(dir, { recursive: true });
   const file = join(dir, `${id}.json`);
   let current = null;
   try {
     current = JSON.parse(readFileSync(file, "utf8"));
   } catch {}
+  const next = sessionRecord(payload, bound, current);
+  if (!next) return;
+  mkdirSync(dir, { recursive: true });
   if (JSON.stringify(current) !== JSON.stringify(next)) writeAtomic(file, JSON.stringify(next));
 }
 
@@ -165,7 +177,9 @@ function main() {
     return;
   }
   const record = activityRecord(payload, Math.floor(Date.now() / 1000));
-  if (!record) return;
+  // SessionStart (startup, /clear, resume) only moves the chat to the new conversation: no activity to record.
+  const sessionOnly = payload?.hook_event_name === "SessionStart";
+  if (!record && !sessionOnly) return;
   const data = join(appHome(), "data", "polyflow-office");
   // Claude Code and current Codex pass the terminal's environment; without it (older Codex) the session is
   // matched to a terminal.
@@ -175,6 +189,7 @@ function main() {
   try {
     rememberTranscript(data, id, payload, fromEnv ? "env" : "guess");
   } catch {} // e.g. the chat is reading the file right now (Windows): the activity record still goes through
+  if (!record) return;
   const dir = join(data, "activity");
   mkdirSync(dir, { recursive: true });
   const file = join(dir, `${id}.json`);

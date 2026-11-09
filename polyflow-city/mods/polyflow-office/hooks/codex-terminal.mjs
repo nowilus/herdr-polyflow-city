@@ -9,7 +9,7 @@ import { join } from "node:path";
 const UUID_V7 = /^([0-9a-f]{8})-([0-9a-f]{4})-7[0-9a-f]{3}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const SLACK_MS = 500; // a session can report a time a hair before its terminal (clock rounding)
 const KEEP_SESSIONS = 200;
-const MISS_TTL_MS = 60000; // a failed lookup is not retried for this long
+export const MISS_TTL_MS = 60000; // a failed lookup is not retried for this long
 const BUDGET_MS = 2500; // all hc calls of one lookup together, well inside the hook's 5 s
 const TERMINAL_ID = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
 
@@ -40,16 +40,19 @@ export function pickTerminal(terminals, sessionMs, cwd) {
   return latest.address;
 }
 
-function hcJson(args, deadline) {
+// Default hc runner: (args, timeoutMs) -> stdout text. Tests inject their own.
+const runHc = (args, timeout) => execFileSync("hc", args, { encoding: "utf8", timeout, windowsHide: true });
+
+function hcJson(args, deadline, run) {
   const left = deadline - Date.now();
   if (left <= 100) throw new Error("hc budget spent");
-  return JSON.parse(execFileSync("hc", args, { encoding: "utf8", timeout: left, windowsHide: true }));
+  return JSON.parse(run(args, left));
 }
 
 // Live Codex terminals of the folder, with their start time (only those are asked for details).
-function candidates(cwd, deadline) {
-  const list = (hcJson(["ls"], deadline).terminals ?? []).filter((t) => t.agent === "codex" && t.state === "live" && (!cwd || samePath(t.cwd, cwd)));
-  return list.map((t) => ({ ...t, created_ms: hcJson(["get", t.address], deadline).created_ms }));
+function candidates(cwd, deadline, run) {
+  const list = (hcJson(["ls"], deadline, run).terminals ?? []).filter((t) => t.agent === "codex" && t.state === "live" && (!cwd || samePath(t.cwd, cwd)));
+  return list.map((t) => ({ ...t, created_ms: hcJson(["get", t.address], deadline, run).created_ms }));
 }
 
 function readMap(file) {
@@ -71,7 +74,7 @@ function writeMap(file, dir, map) {
 
 // The terminal for a Codex session, from the remembered matches or by asking herdr-core once.
 // Map entries: "t1a" (a match) or { miss: <ms> } (no unambiguous match, recently).
-export function terminalForSession(session, cwd, dataDir, now = Date.now()) {
+export function terminalForSession(session, cwd, dataDir, now = Date.now(), run = runHc) {
   if (typeof session !== "string" || !/^[\w-]{8,64}$/.test(session)) return null;
   const file = join(dataDir, "codex-sessions.json");
   const map = readMap(file);
@@ -80,7 +83,7 @@ export function terminalForSession(session, cwd, dataDir, now = Date.now()) {
   if (known && typeof known.miss === "number" && now - known.miss < MISS_TTL_MS) return null;
   let address = null;
   try {
-    address = pickTerminal(candidates(cwd, now + BUDGET_MS), uuidV7Ms(session), cwd);
+    address = pickTerminal(candidates(cwd, now + BUDGET_MS, run), uuidV7Ms(session), cwd);
   } catch {
     address = null;
   }

@@ -5,8 +5,9 @@ import { div, image } from "gpui-kit";
 import { jobIn, spritePath } from "./lib.js";
 import { floorPose } from "./floor-crowd.js";
 import { cameraFrame } from "./camera.js";
-import { contactShadow, motion, nameTag, personTip } from "./labels.js";
+import { contactShadow, energyPills, motion, nameTag, personTip } from "./labels.js";
 import { POUR_MS, openDoors } from "./scene-plan.js";
+import { renderLimitsBoard } from "./limits-ui.js";
 
 const ART_ROOT = "mods/polyflow-office/art";
 const MINI_DIR = "mods/polyflow-office/art/mini";
@@ -85,7 +86,7 @@ function person(view, s, address, p, t, now, pose) {
     .when(cup, (x) => x.child(div().absolute().left(((p.goal.face === "l" ? size.w * 0.28 : size.w * 0.62)) * s).top(size.h * 0.52 * s)
       .w(9 * s).h(11 * s).bg("#e8e8e8").border(Math.max(1, s)).border_color("#c58b4a")));
   // A walker glides to the end of the leg until the next render, so it is sorted by where the leg ends.
-  return { depth: leg ? leg.y : at.y, el };
+  return { depth: leg ? leg.y : at.y, el, pill: { address, x: tx * s, y: (ty - raise - size.h) * s, msX: ms, msY: ms } };
 }
 
 // Who works where right now: object ids with a settled person, and when they sat down.
@@ -99,7 +100,7 @@ function occupied(view, now) {
 
 // Furniture as depth-sorted items. A part follows the object it belongs to (`of`): a rack door swings away and a
 // drawer slides out while someone works there, a chair makes room for the sitter, holograms glow brighter.
-function furniture(view, s, now, art) {
+function furniture(view, s, now, art, t) {
   const scene = view.plan.scene;
   const busy = occupied(view, now);
   const blocked = Object.keys(view.people).some((a) => view.agentsBy[a]?.status === "blocked");
@@ -119,6 +120,7 @@ function furniture(view, s, now, art) {
     if (o.part === "drawer") img = img.opacity(used ? 1 : 0).transition("opacity", { duration: ms(350) });
     if (o.part === "chair") img = img.opacity(used ? 0 : 1).transition("opacity", { duration: ms(250) });
     const parts = [img];
+    if (o.id === "limits-board") parts.push(renderLimitsBoard(o, s, now, t));
     if (o.part === "alarm" && blocked) {
       parts.push(motion(div().id(`alarm-${o.id}`).absolute().left((o.x + 8) * s).top((o.y + 6) * s).w((o.w - 16) * s).h((o.h - 32) * s).bg("#ff2a6d").opacity(0.35), "opacity", { from: 0.05, to: 0.55, period: 700 }));
     }
@@ -164,7 +166,8 @@ export function renderScene(view, t) {
   const poses = new Map(Object.values(view.people).map((p) => [p, floorPose(p, now)])); // once per person
   const open = openDoors(scene, view.people, (p) => poses.get(p).at);
   const display = scene.doors.lift.display;
-  const items = [...furniture(view, s, now, art), ...Object.entries(view.people).map(([a, p]) => person(view, s, a, p, t, now, poses.get(p))).filter(Boolean)]
+  const people = Object.entries(view.people).map(([a, p]) => person(view, s, a, p, t, now, poses.get(p))).filter(Boolean);
+  const items = [...furniture(view, s, now, art, t), ...people]
     .sort((a, b) => a.depth - b.depth);
   const world = div().id("scene-world").absolute().left(cam.x).top(cam.y).w(scene.w * s).h(scene.h * s)
     .child(image(`${art}/${scene.shell}.png`).absolute().left(0).top(0).w(scene.w * s).h(scene.h * s))
@@ -172,6 +175,7 @@ export function renderScene(view, t) {
     .when(Boolean(display), (x) => x.child(div().absolute().left(display.x * s).top(display.y * s).w(display.w * s).h(display.h * s).flex().items_center().justify_center()
       .font_family(SIGN_FONT).text_size(Math.max(8, 18 * s)).text_color(t.working).child(String(scene.no))))
     .children(signs(scene, s, t))
-    .children(items.map((i) => i.el));
+    .children(items.map((i) => i.el))
+    .children(energyPills(people.map((p) => p.pill), t));
   return cameraFrame(view, world, t);
 }

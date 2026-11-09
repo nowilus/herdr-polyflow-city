@@ -151,29 +151,59 @@
                     },
                     {
                       "id": "office-chat-right",
-                      "type": "block",
+                      "type": "column",
                       "hidden": true,
                       "size": {
                         "px": 560
                       },
                       "min": 320,
-                      "content": {
-                        "agent": "focused"
-                      }
+                      "resizable": false,
+                      "children": [
+                        {
+                          "id": "office-chat-right-bar",
+                          "type": "block",
+                          "size": { "px": 30 },
+                          "content": { "mod": "polyflow-office", "props": { "chatBar": "follow", "chatPlace": "right" } }
+                        },
+                        {
+                          "id": "office-chat-right-body",
+                          "type": "stack",
+                          "active": "office-chat-right-chat",
+                          "children": [
+                            { "id": "office-chat-right-chat", "type": "block", "content": { "mod": "polyflow-office", "props": { "chatPlace": "right" } } },
+                            { "id": "office-chat-right-terminal", "type": "block", "content": { "agent": "focused" } }
+                          ]
+                        }
+                      ]
                     }
                   ]
                 },
                 {
                   "id": "office-chat-bottom",
-                  "type": "block",
+                  "type": "column",
                   "hidden": true,
                   "size": {
                     "px": 340
                   },
-                  "min": 160,
-                  "content": {
-                    "agent": "focused"
-                  }
+                  "min": 200,
+                  "resizable": false,
+                  "children": [
+                    {
+                      "id": "office-chat-bottom-bar",
+                      "type": "block",
+                      "size": { "px": 30 },
+                      "content": { "mod": "polyflow-office", "props": { "chatBar": "follow", "chatPlace": "bottom" } }
+                    },
+                    {
+                      "id": "office-chat-bottom-body",
+                      "type": "stack",
+                      "active": "office-chat-bottom-chat",
+                      "children": [
+                        { "id": "office-chat-bottom-chat", "type": "block", "content": { "mod": "polyflow-office", "props": { "chatPlace": "bottom" } } },
+                        { "id": "office-chat-bottom-terminal", "type": "block", "content": { "agent": "focused" } }
+                      ]
+                    }
+                  ]
                 }
               ]
             },

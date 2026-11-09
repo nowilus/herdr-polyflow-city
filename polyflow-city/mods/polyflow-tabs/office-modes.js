@@ -44,6 +44,17 @@ export function modeCommands(state) {
   ];
 }
 
+// Keep this module self-contained: tabs receives a byte-identical copy, not chat-model.
+export function layoutCommands(state, child = "chat") {
+  const s = officeState(state);
+  const commands = modeCommands(s);
+  if (s.mode === "full" && (s.chat === "bottom" || s.chat === "right")) {
+    const root = `office-chat-${s.chat}`;
+    commands.push(["layout.select", { stack: `${root}-body`, child: `${root}-${child === "terminal" ? "terminal" : "chat"}` }]);
+  }
+  return commands;
+}
+
 // The state after a user action; unknown actions leave it as it was.
 export function nextState(state, action) {
   const s = officeState(state);
@@ -67,8 +78,8 @@ export function commandAction(name) {
   return COMMANDS[name] ? { ...COMMANDS[name] } : null;
 }
 
-// Whether the floating chat window may be open in this state (only full + float); anywhere else it must be closed.
+// SIDE permits an explicitly opened FLOAT; entering SIDE never opens it on its own.
 export function allowsFloatingChat(state) {
   const s = officeState(state);
-  return s.mode === "full" && s.chat === "float";
+  return s.mode === "side" || (s.mode === "full" && s.chat === "float");
 }

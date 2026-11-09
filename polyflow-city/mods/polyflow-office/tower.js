@@ -8,7 +8,7 @@ import { poseOf, presence, xAt } from "./crowd.js";
 import { DOOR_MS, doorsOpen } from "./lift.js";
 import { ENTRANCE_X, FLOORS, FLOOR_ORDER, LIFT, OBJECTS, ROOM, SCENE_H, SCENE_W, cabinTop } from "./tower-scene.js";
 import { ART_DIR, holdsCup, renderObjects } from "./tower-props.js";
-import { motion, nameTag, personTip } from "./labels.js";
+import { energyPills, motion, nameTag, personTip } from "./labels.js";
 
 export const TOWER = Object.freeze({ w: SCENE_W, h: SCENE_H });
 
@@ -181,6 +181,7 @@ function person(view, px, address, p, t, part) {
     leftMs = glides ? Math.max(1, Math.round(p.end - now)) : 1;
     base = FLOORS[p.floor].y - (p.dy ?? 0);
   }
+  if (part === "pill") return { address, x: px(x), y: px(base - sprite.h), msX: leftMs, msY: topMs, easing: p.phase === "ride" ? "ease-in-out" : "ease-out" };
   const box = v_flex().id(`${part === "label" ? "tag" : "who"}-${address}`).absolute().items_center()
     .left(px(x - sprite.w / 2)).top(px(base - sprite.h)).w(px(sprite.w)).h(px(sprite.h + 22))
     .transition("left", { duration: leftMs, easing: "linear" })
@@ -231,5 +232,6 @@ export function renderTower(view, t) {
     .children(renderObjects(OBJECTS, "front", px, view.assets, view.occupancy, ctx))
     // The people in the rooms stand in front of everything, and every name tag is on top of it all.
     .children(bodies((p) => !inCabin(p)))
-    .children(labels);
+    .children(labels)
+    .children(energyPills(everyone.map(([a, p]) => person(view, px, a, p, t, "pill")).filter(Boolean), t, 0.75));
 }

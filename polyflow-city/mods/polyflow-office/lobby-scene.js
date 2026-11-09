@@ -7,6 +7,7 @@ import { ROOM, scenePlan } from "./scene-plan.js";
 // by it, people in front of it hide it). Wall things have depth 0. block: the floor band nobody walks through.
 const OBJECTS = Object.freeze([
   { id: "back-bar", art: "back-bar", x: 908, y: 249, w: 193, h: 111, depth: 0 },
+  { id: "limits-board", art: "limits-board", x: 1116, y: 245, w: 130, h: 95, depth: 0 },
   { id: "neon", art: "neon", x: 466, y: 290, w: 105, h: 51, depth: 0, pulse: true },
   { id: "poster", art: "poster", x: 812, y: 246, w: 78, h: 67, depth: 0 },
   { id: "vending", art: "vending", x: 88, y: 280, w: 95, h: 191, depth: 470, block: [88, 430, 182, 472] },

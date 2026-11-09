@@ -1,33 +1,60 @@
 // "+ AGENT": a dialog that starts a new agent in a new tab (Herdr's tab.new). The office then sees it walk in
 // through the lobby's front door and rest there until it has something to do. Until it shows up among the agents
 // the office bar says it's connecting; if it never does, the bar says so and points at its tab.
+//
+// The name and first task are native text fields (text-field.js); the programs offered are those of the chosen
+// space's machine (agent-programs.js). Starting re-checks everything at the moment of the click (form-model.js).
 import { div } from "gpui-kit";
 import { h_flex, v_flex } from "gpui-base";
-import { agents, closeOverlay, knownAgents, openOverlay, props, run, setShared, shared, spaces } from "herdr";
+import { agents, closeOverlay, machines, openOverlay, props, run, setShared, shared, spaces } from "herdr";
+import { buildNewAgentArgs, launchGuard, machineLayout, nextFormField, validateAgentName } from "./form-model.js";
+import { machineLabel, pickSpace, refreshPrograms, retryPrograms, watchPrograms } from "./agent-programs.js";
+import { bindFieldKeys, createTextField, releaseTextField, renderTextField } from "./text-field.js";
+import { SIGN_FONT, TITLE_SIZE, UI_FONT } from "./ui-tokens.js";
 
-const UI_FONT = "Chakra Petch";
-const SIGN_FONT = "Silkscreen";
 export const PENDING_KEY = "polyflow-office.pending-agent";
 export const PENDING_MS = 45000;
-const FIELDS = ["name", "task"];
+const ENTER_GUARD_MS = 400; // a held or repeated Enter must not start a second agent
 
 export function openNewAgent() {
-  return openOverlay({ kind: "dialog", width: 460, height: 430, frame: "none", mod: "polyflow-office", props: { newAgent: true } });
+  return openOverlay({ kind: "dialog", width: 460, height: 520, frame: "none", mod: "polyflow-office", props: { newAgent: true } });
 }
 
+// view.form: space, machine / machineKey (whose programs `programs` are), programs, programKey, missing,
+// programsState (loading | ready | error | unavailable), programsError, requestId, checkedAt, layoutSeen, active (the
+// field with the keyboard), nameError, error, starting, closed. The name and task are in view.formName / formTask.
 export function initNewAgent(view, cx) {
-  const active = spaces().find((s) => s.active) ?? spaces()[0] ?? null;
-  view.form = { programs: null, missing: 0, pick: 0, space: active?.id ?? null, name: "", task: "", field: "name", error: null };
+  const space = spaces().find((s) => s.active) ?? spaces()[0] ?? null;
+  view.form = { space: space?.id ?? null, machine: null, machineKey: null, programs: [], missing: 0, programKey: null, programsState: "loading", programsError: null,
+    requestId: 0, checkedAt: 0, layoutSeen: null, active: "name", nameError: null, error: null, starting: false, closed: false };
+  view.formStartAt = 0;
   view.formFocus = cx.focus_handle();
-  view.formFocus.focus();
-  cx.spawn(async (cx) => {
-    const list = await knownAgents({ on: active?.machine ?? null }).catch(() => []);
-    // Only what can start here; the rest is counted, not offered.
-    const runnable = list.filter((p) => p.run?.length);
-    const programs = runnable.filter((p) => p.installed);
-    view.form = { ...view.form, programs, missing: runnable.length - programs.length, pick: 0 };
-    cx.notify();
+  bindFieldKeys(cx);
+  view.formName = createTextField({
+    id: "new-name", mode: "single", placeholder: "its tab's name",
+    // Once an error is showing it follows what is typed.
+    onChange: (v, cx) => { if (view.form.nameError) view.form = { ...view.form, nameError: validateAgentName(v, { optional: true }).error ?? null }; cx?.notify(); },
+    onSubmit: (_snap, cx) => start(view, cx),
+    onFocus: (cx) => { view.form = { ...view.form, active: "name" }; cx?.notify(); },
   });
+  view.formTask = createTextField({
+    id: "new-task", mode: "multi", rows: [1, 4], placeholder: "empty: it waits in the lobby",
+    onSubmit: (_snap, cx) => start(view, cx),
+    onFocus: (cx) => { view.form = { ...view.form, active: "task" }; cx?.notify(); },
+  });
+  view.formName.focus();
+  // The list is asked for after the form is up, so the boxes work at once.
+  refreshPrograms(view, space?.machine ?? null, cx);
+  view.formTimers = [cx.timer.every(1000, (cx) => watchPrograms(view, cx))];
+}
+
+// The dialog goes away: stop the timer, let go of the fields, and let any answer still on its way fall on a closed form.
+export function closeNewAgent(view) {
+  if (!view.form || view.form.closed) return;
+  view.form = { ...view.form, closed: true, requestId: view.form.requestId + 1 };
+  for (const task of view.formTimers ?? []) task.cancel();
+  releaseTextField(view.formName);
+  releaseTextField(view.formTask);
 }
 
 // The new agent, as the office waits for it: { space, name, since, known: addresses already there }.
@@ -51,39 +78,54 @@ export function settlePending(now) {
   return { waiting: p };
 }
 
-function start(view) {
+function fail(view, patch, cx) {
+  view.form = { ...view.form, ...patch };
+  cx.notify();
+}
+
+// Start the agent: Enter in either box, the START button. Everything is checked as it is now (the space, its machine
+// and layout, the program, the name); `starting` is set before anything else so a second press can't start another.
+function start(view, cx) {
   const f = view.form;
-  const program = f.programs?.[f.pick];
-  if (!program) return;
-  if (!f.space) {
-    view.form = { ...f, error: "There's no space to start it in." };
-    return;
+  if (f.starting || f.closed || Date.now() - view.formStartAt < ENTER_GUARD_MS) return;
+  view.formStartAt = Date.now();
+  const spaceInfo = spaces().find((s) => s.id === f.space) ?? null;
+  const guard = launchGuard({ spaceInfo, layout: machineLayout(machines(), spaceInfo?.machine ?? null), form: f });
+  if (!guard.ok) {
+    if (guard.refresh) refreshPrograms(view, spaceInfo.machine, cx);
+    return fail(view, { error: guard.reason }, cx);
   }
-  const args = { space: f.space, argv: program.run };
-  if (f.name.trim()) args.name = f.name.trim();
-  if (f.task.trim()) args.task = f.task.trim();
+  const built = buildNewAgentArgs({ space: f.space, program: guard.program, rawName: view.formName.value(), rawTask: view.formTask.value() });
+  if (!built.ok) {
+    if (built.field === "name") view.formName.focus();
+    return fail(view, { nameError: built.field === "name" ? built.error : null, error: built.field === "name" ? null : built.error }, cx);
+  }
+  view.form = { ...f, starting: true, error: null, nameError: null };
   const known = agents().map((a) => a.address);
   try {
-    run("tab.new", args);
+    run("tab.new", built.args);
   } catch (err) {
-    view.form = { ...f, error: `Couldn't start it: ${String(err?.message ?? err).slice(0, 120)}` };
-    return;
+    return fail(view, { starting: false, error: `Couldn't start it: ${String(err?.message ?? err).slice(0, 120)}` }, cx);
   }
-  setShared(PENDING_KEY, { space: f.space, name: f.name.trim() || program.name, named: Boolean(f.name.trim()), since: Date.now(), known });
+  setShared(PENDING_KEY, { space: f.space, name: built.args.name ?? guard.program.name, named: built.named, since: Date.now(), known });
   closeOverlay(props()?.overlay);
 }
 
+// Tab / Shift+Tab between the two boxes.
+function moveField(view, direction, cx) {
+  const next = nextFormField(view.form.active, direction);
+  (next === "task" ? view.formTask : view.formName).focus();
+  cx.notify();
+}
+
+const closeForm = () => closeOverlay(props()?.overlay);
+
+// The dialog's own keys: Esc closes, Enter starts when no box has the keyboard (a click on a chip). Typing and Enter
+// inside a box belong to the box.
 export function newAgentKey(view, e, cx) {
-  const f = view.form;
-  const m = e.modifiers;
-  if (e.key === "escape") closeOverlay(props()?.overlay);
-  else if (e.key === "enter") start(view);
-  else if (e.key === "tab") view.form = { ...f, field: FIELDS[(FIELDS.indexOf(f.field) + 1) % FIELDS.length] };
-  else if (e.key === "up" || e.key === "down") {
-    const n = f.programs?.length ?? 0;
-    if (n) view.form = { ...f, pick: (f.pick + (e.key === "down" ? 1 : n - 1)) % n, error: null };
-  } else if (e.key === "backspace") view.form = { ...f, [f.field]: f[f.field].slice(0, -1) };
-  else if (e.key_char && !m.control && !m.platform) view.form = { ...f, [f.field]: f[f.field] + e.key_char };
+  const inBox = view.formName?.focused || view.formTask?.focused;
+  if (e.key === "escape") closeForm();
+  else if (e.key === "enter" && !inBox && !e.modifiers?.shift && !e.is_held) start(view, cx);
   else return;
   cx.stop_propagation();
   cx.notify();
@@ -93,51 +135,47 @@ function label(text, t) {
   return div().font_family(SIGN_FONT).text_size(9).text_color(t.dim).child(text);
 }
 
-function input(view, id, placeholder, t) {
+const note = (text, t, color = t.dim) => div().font_family(UI_FONT).text_size(12).text_color(color).child(text);
+
+// Chips for the programs, or what stands in their place (checking, error with RETRY, nothing installed).
+function programList(view, t, button) {
   const f = view.form;
-  const on = f.field === id;
-  const text = f[id];
-  return h_flex().id(`new-${id}`).h(28).px(8).items_center().bg(t.canvas).border(1).border_color(on ? t.accent : t.border)
-    .overflow_hidden().cursor_text().font_family(UI_FONT).text_size(13)
-    .on_click((_e, cx) => { view.form = { ...view.form, field: id }; cx.notify(); })
-    .child(div().text_color(text ? t.foreground : t.dim).child(text || placeholder))
-    .when(on, (el) => el.child(div().w(1).h(15).bg(t.accent).loop("opacity", { from: 0, to: 1, period: 1000 })));
+  const where = machineLabel(f.machine);
+  if (f.programsState === "unavailable") return note(f.programsError ?? `${where} isn't available.`, t, t.blocked);
+  if (f.programsState === "error") {
+    return h_flex().gap(8).items_center().child(div().flex_1().child(note(f.programsError, t, t.blocked)))
+      .child(button("programs-retry", "RETRY", (_e, cx) => { retryPrograms(view, cx); }, t));
+  }
+  if (f.programs.length === 0) return note(f.programsState === "loading" ? `Checking programs on ${where}…` : `No installed launchable programs on ${where}.`, t);
+  // While a refresh runs the old list stays on show but is dimmed: it can't start yet.
+  const ready = f.programsState === "ready";
+  return h_flex().flex_wrap().gap(6).children(f.programs.map((p) => {
+    const on = p.key === f.programKey;
+    return button(`prog-${p.key}`, p.name, (_e, cx) => { view.form = { ...view.form, programKey: p.key, error: null }; cx.notify(); }, t,
+      { on, title: p.run.join(" ") }).opacity(ready ? 1 : 0.5);
+  }));
 }
 
 export function renderNewAgent(view, t, button) {
   const f = view.form;
-  const list = f.programs;
-  const programs = list === null
-    ? div().font_family(UI_FONT).text_size(12).text_color(t.dim).child("Looking for agents…")
-    : list.length === 0
-      ? div().font_family(UI_FONT).text_size(12).text_color(t.dim).child("No installed agents found (programs.json).")
-      : h_flex().flex_wrap().gap(6).children(list.map((p, i) => div().id(`prog-${i}`).h(26).px(8).flex().items_center()
-        .font_family(UI_FONT).text_size(12).border(1)
-        .border_color(i === f.pick ? t.accent : t.border).bg(i === f.pick ? `${t.accent}26` : `${t.surface}e6`)
-        .text_color(i === f.pick ? t.accent : t.foreground).cursor_pointer()
-        .tooltip(p.run.join(" "))
-        .on_click((_e, cx) => { view.form = { ...view.form, pick: i, error: null }; cx.notify(); })
-        .child(p.name)));
-  const spaceList = h_flex().flex_wrap().gap(6).children(spaces().map((s) => div().id(`space-${s.id}`).h(24).px(8).flex().items_center()
-    .font_family(UI_FONT).text_size(12).border(1)
-    .border_color(s.id === f.space ? t.accent : t.border).bg(s.id === f.space ? `${t.accent}26` : `${t.surface}e6`)
-    .text_color(s.id === f.space ? t.accent : t.foreground).cursor_pointer()
-    .on_click((_e, cx) => { view.form = { ...view.form, space: s.id }; cx.notify(); })
-    .child(s.name || `space ${s.index + 1}`)));
+  const spaceList = h_flex().flex_wrap().gap(6).children(spaces().map((s) =>
+    button(`space-${s.id}`, s.name || `space ${s.index + 1}`, (_e, cx) => { pickSpace(view, s.id, cx); }, t, { on: s.id === f.space })));
+  const fieldKeys = { onCancel: closeForm, onTab: (direction, cx) => moveField(view, direction, cx) };
   return v_flex().id("new-agent").track_focus(view.formFocus).on_key_down((e, cx) => newAgentKey(view, e, cx))
     .size_full().p(14).gap(10).bg(`${t.popover}fa`).border(1).border_color(t.accent).border_t(3)
     .child(h_flex().items_center()
-      .child(div().flex_1().font_family(SIGN_FONT).text_size(13).text_color(t.accent).child("+ NEW AGENT"))
+      .child(div().flex_1().font_family(SIGN_FONT).text_size(TITLE_SIZE).text_color(t.accent).child("+ NEW AGENT"))
       .child(div().font_family(UI_FONT).text_size(11).text_color(t.dim).child("it walks in through the lobby")))
-    .child(v_flex().gap(4).child(label("AGENT", t)).child(programs)
-      .when(f.missing > 0, (el) => el.child(div().font_family(UI_FONT).text_size(11).text_color(t.dim).child(`+${f.missing} more not installed here`))))
+    .child(v_flex().gap(4).child(label(`AGENT · PROGRAMS ON: ${machineLabel(f.machine).toUpperCase()}`, t)).child(programList(view, t, button))
+      .when(f.programsState === "ready" && f.missing > 0, (el) => el.child(div().font_family(UI_FONT).text_size(11).text_color(t.dim).child(`+${f.missing} more not installed here`))))
     .child(v_flex().gap(4).child(label("SPACE", t)).child(spaceList))
-    .child(v_flex().gap(4).child(label("NAME (OPTIONAL)", t)).child(input(view, "name", "its tab's name", t)))
-    .child(v_flex().gap(4).child(label("FIRST TASK (OPTIONAL)", t)).child(input(view, "task", "empty: it waits in the lobby", t)))
+    .child(v_flex().gap(4).child(label("NAME (OPTIONAL)", t)).child(renderTextField(view.formName, t, fieldKeys))
+      .child(div().h(14).font_family(UI_FONT).text_size(11).text_color(t.blocked).child(f.nameError ?? "")))
+    .child(v_flex().gap(4).child(label("FIRST TASK (OPTIONAL)", t)).child(renderTextField(view.formTask, t, fieldKeys)))
     .when(Boolean(f.error), (el) => el.child(div().font_family(UI_FONT).text_size(12).text_color(t.blocked).child(f.error)))
     .child(div().flex_1())
     .child(h_flex().gap(6).items_center()
-      .child(div().flex_1().font_family(UI_FONT).text_size(11).text_color(t.dim).child("Enter starts · Tab next field · Esc closes"))
-      .child(button("new-cancel", "CANCEL", (_e, cx) => { closeOverlay(props()?.overlay); cx.notify(); }, t))
-      .child(button("new-start", "START", (_e, cx) => { start(view); cx.notify(); }, t, { on: true })));
+      .child(div().flex_1().font_family(UI_FONT).text_size(11).text_color(t.dim).child("Enter starts · Shift+Enter new line · Tab next box · Esc closes"))
+      .child(button("new-cancel", "CANCEL", (_e, cx) => { closeForm(); cx.notify(); }, t))
+      .child(button("new-start", "START", (_e, cx) => { start(view, cx); }, t, { on: f.programsState === "ready" })));
 }

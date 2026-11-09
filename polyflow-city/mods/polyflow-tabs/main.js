@@ -2,7 +2,7 @@ import { View, div, svg, image } from "gpui-kit";
 import { h_flex } from "gpui-base";
 import { agents, spaces, panes, run, openOverlay, theme, window, shared, setShared, layout, settings, appHome, readTextFile, nextCommand } from "herdr";
 import { JOBS_MEMORY_KEY, assignJobs, jobIn, portraitPath, tabNames, tabRefs } from "./lib.js";
-import { KEY as OFFICE_KEY, commandAction, modeCommands, nextState } from "./office-modes.js";
+import { KEY as OFFICE_KEY, commandAction, layoutCommands, nextState } from "./office-modes.js";
 
 const JOBS_FILE = `${appHome()}/mods/polyflow-agents/jobs.json`;
 
@@ -10,7 +10,7 @@ const JOBS_FILE = `${appHome()}/mods/polyflow-agents/jobs.json`;
 function applyOffice(action) {
   const next = nextState(shared(OFFICE_KEY), action);
   setShared(OFFICE_KEY, next);
-  for (const [name, args] of modeCommands(next)) run(name, args);
+  for (const [name, args] of layoutCommands(next)) run(name, args);
 }
 
 function find(node, id) {

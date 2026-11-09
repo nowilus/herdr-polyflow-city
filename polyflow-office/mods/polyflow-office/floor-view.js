@@ -7,6 +7,7 @@ import { jobIn } from "./lib.js";
 import { CELL } from "./grid.js";
 import { cameraFrame } from "./camera.js";
 import { floorPose } from "./floor-crowd.js";
+import { energyPills, motion, nameTag, personTip } from "./labels.js";
 
 const ART = "mods/polyflow-office/art";
 const SIGN_FONT = "Silkscreen";
@@ -80,13 +81,13 @@ function person(view, s, address, p, t) {
     .transition("left", { duration: ms, easing: "linear" }).transition("top", { duration: ms, easing: "linear" })
     .cursor_pointer().on_click((_e, cx) => view.onPerson(address, cx))
     .on_mouse_down("right", (_e, cx) => (view.onPersonMenu ?? view.onPerson)(address, cx))
+    .tooltip(personTip(agent, address, view.doing?.(address)))
     .child(image(`${ART}/floor/${job}-${shown}.gif`).w(PERSON.w * s).h(PERSON.h * s))
-    .child(div().max_w(140 * s).truncate().font_family(SIGN_FONT).text_size(Math.max(7, 11 * s)).px(3 * s).bg(`${t.background}cc`)
-      .text_color(agent.status === "blocked" ? t.blocked : t.foreground).child(agent.tab_name || address))
+    .child(nameTag(agent, address, t, Math.max(90, 140 * s)))
     .when(Boolean(bubble), (x) => x.child(
-      div().absolute().top(-16 * s).px(5 * s).bg(agent.status === "blocked" ? t.blocked : t.popover).text_color("#ffffff")
-        .font_family(SIGN_FONT).text_size(Math.max(8, 13 * s)).child(bubble).loop("opacity", { from: 0.6, to: 1, period: 900 })));
-  return { depth: at.y, el };
+      motion(div().absolute().top(-16 * s).px(5 * s).bg(agent.status === "blocked" ? t.blocked : t.popover).text_color("#ffffff")
+        .font_family(SIGN_FONT).text_size(Math.max(8, 13 * s)).child(bubble), "opacity", { from: 0.6, to: 1, period: 900 })));
+  return { depth: at.y, el, pill: { address, x: tx * s, y: (ty - PERSON.h) * s, msX: ms, msY: ms } };
 }
 
 // view: { plan, people, agentsBy, assigned, mounted, now, cam: { s, x, y }, size: { w, h }, title, onPerson,
@@ -94,9 +95,11 @@ function person(view, s, address, p, t) {
 export function renderFloor(view, t) {
   const { plan, cam } = view;
   const s = cam.s;
-  const items = [...furniture(plan, s), ...Object.entries(view.people).map(([a, p]) => person(view, s, a, p, t)).filter(Boolean)]
+  const people = Object.entries(view.people).map(([a, p]) => person(view, s, a, p, t)).filter(Boolean);
+  const items = [...furniture(plan, s), ...people]
     .sort((a, b) => a.depth - b.depth);
   const world = div().id("floor-world").absolute().left(cam.x).top(cam.y).w(plan.cols * CELL * s).h(plan.rows * CELL * s)
-    .children(tiles(plan, s)).children(backWall(plan, s, plan.lift)).children(items.map((i) => i.el)).children(signs(plan, s, t));
+    .children(tiles(plan, s)).children(backWall(plan, s, plan.lift)).children(items.map((i) => i.el)).children(signs(plan, s, t))
+    .children(energyPills(people.map((p) => p.pill), t));
   return cameraFrame(view, world, t);
 }
